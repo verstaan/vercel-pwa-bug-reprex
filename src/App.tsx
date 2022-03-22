@@ -1,6 +1,8 @@
 import React from 'react';
 import logo from './logo.svg';
 import './App.css';
+import { getJarvisUrl } from "./types/api";
+
 
 function App() {
   return (
