@@ -8,11 +8,13 @@
 // You can also remove this file if you'd prefer not to use a
 // service worker, and the Workbox build step will be skipped.
 
-import { clientsClaim } from 'workbox-core';
-import { ExpirationPlugin } from 'workbox-expiration';
-import { precacheAndRoute, createHandlerBoundToURL } from 'workbox-precaching';
-import { registerRoute } from 'workbox-routing';
-import { StaleWhileRevalidate } from 'workbox-strategies';
+import { clientsClaim } from "workbox-core";
+import { ExpirationPlugin } from "workbox-expiration";
+import { precacheAndRoute, createHandlerBoundToURL } from "workbox-precaching";
+import { registerRoute } from "workbox-routing";
+import { StaleWhileRevalidate } from "workbox-strategies";
+import { BackgroundSyncPlugin } from "workbox-background-sync";
+import { NetworkOnly } from "workbox-strategies";
 
 declare const self: ServiceWorkerGlobalScope;
 
@@ -27,54 +29,141 @@ precacheAndRoute(self.__WB_MANIFEST);
 // Set up App Shell-style routing, so that all navigation requests
 // are fulfilled with your index.html shell. Learn more at
 // https://developers.google.com/web/fundamentals/architecture/app-shell
-const fileExtensionRegexp = new RegExp('/[^/?]+\\.[^/]+$');
+const fileExtensionRegexp = new RegExp("/[^/?]+\\.[^/]+$");
 registerRoute(
-  // Return false to exempt requests from being fulfilled by index.html.
-  ({ request, url }: { request: Request; url: URL }) => {
-    // If this isn't a navigation, skip.
-    if (request.mode !== 'navigate') {
-      return false;
-    }
+    // Return false to exempt requests from being fulfilled by index.html.
+    ({ request, url }: { request: Request; url: URL }) => {
+        // If this isn't a navigation, skip.
+        if (request.mode !== "navigate") {
+            return false;
+        }
 
-    // If this is a URL that starts with /_, skip.
-    if (url.pathname.startsWith('/_')) {
-      return false;
-    }
+        // If this is a URL that starts with /_, skip.
+        if (url.pathname.startsWith("/_")) {
+            return false;
+        }
 
-    // If this looks like a URL for a resource, because it contains
-    // a file extension, skip.
-    if (url.pathname.match(fileExtensionRegexp)) {
-      return false;
-    }
+        // If this looks like a URL for a resource, because it contains
+        // a file extension, skip.
+        if (url.pathname.match(fileExtensionRegexp)) {
+            return false;
+        }
 
-    // Return true to signal that we want to use the handler.
-    return true;
-  },
-  createHandlerBoundToURL(process.env.PUBLIC_URL + '/index.html')
+        // Return true to signal that we want to use the handler.
+        return true;
+    },
+    createHandlerBoundToURL(process.env.PUBLIC_URL + "/index.html")
 );
 
 // An example runtime caching route for requests that aren't handled by the
 // precache, in this case same-origin .png requests like those from in public/
+// Updated to cache all .pngs fetched (should update to include only orion s3 assets, but this also works for now
 registerRoute(
-  // Add in any other file extensions or routing criteria as needed.
-  ({ url }) => url.origin === self.location.origin && url.pathname.endsWith('.png'),
-  // Customize this strategy as needed, e.g., by changing to CacheFirst.
-  new StaleWhileRevalidate({
-    cacheName: 'images',
-    plugins: [
-      // Ensure that once this runtime cache reaches a maximum size the
-      // least-recently used images are removed.
-      new ExpirationPlugin({ maxEntries: 50 }),
-    ],
-  })
+    // Add in any other file extensions or routing criteria as needed.
+    ({ url }) => url.origin === self.location.origin && url.pathname.endsWith(".png"),
+    // Customize this strategy as needed, e.g., by changing to CacheFirst.
+    new StaleWhileRevalidate({
+        cacheName: "images",
+        plugins: [
+            // Ensure that once this runtime cache reaches a maximum size the
+            // least-recently used images are removed.
+            new ExpirationPlugin({ maxEntries: 50 })
+        ]
+    })
 );
 
 // This allows the web app to trigger skipWaiting via
 // registration.waiting.postMessage({type: 'SKIP_WAITING'})
-self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'SKIP_WAITING') {
-    self.skipWaiting();
-  }
+self.addEventListener("message", (event) => {
+    if (event.data && event.data.type === "SKIP_WAITING") {
+        self.skipWaiting();
+    }
 });
 
 // Any other custom service worker logic can go here.
+
+const isJarvisServer = (hostname: string) => {
+    return hostname === "jarvis.arcturus.us.com" || hostname === "jarvis-staging.arcturus.us.com" || hostname === "jarvis-dev.arcturus.us.com";
+};
+
+const bgSyncCreateReport = new BackgroundSyncPlugin("createReport", {
+    maxRetentionTime: 3 * 60, // Retry for max of 3 Hours (specified in minutes)
+    onSync: async (obj: any) => {
+        const queue = obj.queue;
+        console.log("[Service worker]...Synchronizing " + queue.name);
+        let entry;
+        setTimeout(async () => {
+            // tslint:disable-next-line:no-conditional-assignment
+            while ((entry = await queue.shiftRequest())) {
+                try {
+                    console.log("[Service worker]...Replaying: " + entry.request.url);
+                    // clonedRequest = entry.request.clone();
+                    const response = await fetch(entry.request);
+                    console.log("[Service worker]...Replayed: " + entry.request.url + " and received response: ");
+                    console.log(response);
+
+                    try {
+                        const broadcast = new BroadcastChannel("bgSync");
+                        broadcast.postMessage({ payload: true });
+                    } catch (error) {
+                        console.error("[Service worker] Broadcast channel not supported? : ", error);
+                    }
+                } catch (error) {
+                    console.error("[Service worker] Replay failed for request", entry.request, error);
+                    await queue.unshiftRequest(entry);
+                    return;
+                }
+            }
+            console.log("[Service worker] Replay complete!");
+        }, 3000);
+    }
+});
+
+registerRoute(
+    ({ url }) => isJarvisServer(url.hostname) && url.pathname === "/client/createReport",
+    new NetworkOnly({
+        plugins: [bgSyncCreateReport]
+    }),
+    "POST"
+);
+
+const bgSyncAlertReport = new BackgroundSyncPlugin("createAlert", {
+    maxRetentionTime: 3 * 60, // Retry for max of 3 Hours (specified in minutes)
+    onSync: async (obj: any) => {
+        const queue = obj.queue;
+        console.log("[Service worker]...Synchronizing " + queue.name);
+        let entry;
+        setTimeout(async () => {
+            // tslint:disable-next-line:no-conditional-assignment
+            while ((entry = await queue.shiftRequest())) {
+                try {
+                    console.log("[Service worker]...Replaying: " + entry.request.url);
+                    console.log(entry.request);
+                    const response = await fetch(entry.request);
+                    console.log("[Service worker]...Replayed: " + entry.request.url + " and received response: ");
+                    console.log(response);
+
+                    try {
+                        const broadcast = new BroadcastChannel("bgSync");
+                        broadcast.postMessage({ payload: true });
+                    } catch (error) {
+                        console.error("[Service worker] Broadcast channel not supported? : ", error);
+                    }
+                } catch (error) {
+                    console.error("[Service worker] Replay failed for request", entry.request, error);
+                    await queue.unshiftRequest(entry);
+                    return;
+                }
+            }
+            console.log("[Service worker] Replay complete!");
+        }, 3000);
+    }
+});
+
+registerRoute(
+    ({ url }) => isJarvisServer(url.hostname) && url.pathname === "/client/createAlertReport",
+    new NetworkOnly({
+        plugins: [bgSyncAlertReport]
+    }),
+    "POST"
+);
