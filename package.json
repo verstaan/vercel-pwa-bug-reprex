@@ -33,6 +33,7 @@
     "build": "react-scripts build",
     "test": "react-scripts test",
     "eject": "react-scripts eject",
+    "netlify-deploy": "cd src/types && npm i && cd ../.. && react-scripts build",
     "install-types": "git submodule update --init --remote && cd src/types && git checkout master && git pull && npm i && cd .. && cd ..",
     "vercel-build": "./vercel-submodule-workaround.sh && npm run netlify-deploy"
   },
