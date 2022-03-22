@@ -1,8 +1,8 @@
 # repo paths (supplied without the protocol prefix)
 MAIN_REPO=github.com/verstaan/vercel-pwa-bug-reprex.git
 # the reference of the submodule in .gitmodules (usually the path)
-SUBMODULE_REF=./types
-SUBMODULE_PATH=./types
+SUBMODULE_REF=src/types
+SUBMODULE_PATH=src/types
 if [ "$VERCEL_GIT_COMMIT_SHA" == "" ]; then
   echo "Error: VERCEL_GIT_COMMIT_SHA is empty"
   exit 1
